@@ -609,6 +609,122 @@ async def list_devices(limit: int = 50) -> dict[str, Any]:
     }
 
 
+# ==================== EVENTS TOOLS ====================
+
+
+@mcp.tool()
+async def list_events(
+    limit: int = 50,
+    category: str | None = None,
+) -> dict[str, Any]:
+    """List compliance events from the audit log.
+
+    Note: Due to API limitations, events are returned in chronological order (oldest first).
+
+    Args:
+        limit: Number of events to return (default 50)
+        category: Filter by category - PERSONNEL, CONTROL, MONITOR, CONNECTION, POLICY, VENDOR
+
+    Returns:
+        Events with details
+    """
+    client = get_client()
+    result = await client.list_events(limit=min(limit, 50))
+
+    events = result.get("data", [])
+
+    # Filter by category if specified
+    if category:
+        events = [e for e in events if e.get("category") == category]
+
+    return {
+        "total_events": len(events),
+        "events": [
+            {
+                "id": e.get("id"),
+                "type": e.get("type"),
+                "category": e.get("category"),
+                "description": e.get("description"),
+                "source": e.get("source"),
+                "createdAt": e.get("createdAt"),
+                "user": (e.get("user") or {}).get("email"),
+            }
+            for e in events
+        ],
+    }
+
+
+# ==================== ASSETS TOOLS ====================
+
+
+@mcp.tool()
+async def list_assets(
+    asset_type: str | None = None,
+) -> dict[str, Any]:
+    """List all assets in the asset inventory.
+
+    Args:
+        asset_type: Filter by type - PHYSICAL, VIRTUAL, CLOUD, DATA, PERSONNEL
+
+    Returns:
+        List of assets with details
+    """
+    client = get_client()
+    result = await client.list_assets(limit=50)
+
+    assets = result.get("data", [])
+
+    # Filter by type if specified
+    if asset_type:
+        assets = [a for a in assets if a.get("assetType") == asset_type]
+
+    return {
+        "total": len(assets),
+        "assets": [
+            {
+                "id": a.get("id"),
+                "name": a.get("name"),
+                "description": a.get("description"),
+                "assetType": a.get("assetType"),
+                "assetProvider": a.get("assetProvider"),
+                "owner": (a.get("owner") or {}).get("email"),
+                "company": a.get("company"),
+            }
+            for a in assets
+        ],
+    }
+
+
+# ==================== USERS TOOLS ====================
+
+
+@mcp.tool()
+async def list_users() -> dict[str, Any]:
+    """List all Drata users in your organization.
+
+    Returns:
+        List of users with their roles
+    """
+    client = get_client()
+    result = await client._request("GET", "/public/users", params={"limit": 50})
+
+    users = result.get("data", [])
+    return {
+        "total": result.get("total", len(users)),
+        "users": [
+            {
+                "id": u.get("id"),
+                "email": u.get("email"),
+                "name": f"{u.get('firstName', '')} {u.get('lastName', '')}".strip(),
+                "jobTitle": u.get("jobTitle"),
+                "roles": u.get("roles", []),
+                "createdAt": u.get("createdAt"),
+            }
+            for u in users
+        ],
+    }
+
+
 # ==================== COMPLIANCE DASHBOARD ====================
 
 
