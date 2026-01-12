@@ -609,6 +609,87 @@ async def list_devices(limit: int = 50) -> dict[str, Any]:
     }
 
 
+# ==================== EVIDENCE LIBRARY TOOLS ====================
+
+
+@mcp.tool()
+async def list_evidence() -> dict[str, Any]:
+    """List ALL evidence in the evidence library.
+
+    Returns evidence documents uploaded to Drata for compliance.
+
+    Returns:
+        List of evidence with details and versions
+    """
+    client = get_client()
+    workspace_id = await client.get_workspace_id()
+    result = await client.list_all_evidence(workspace_id)
+
+    evidence = result.get("data", [])
+    return {
+        "total": len(evidence),
+        "evidence": [
+            {
+                "id": e.get("id"),
+                "name": e.get("name"),
+                "description": e.get("description"),
+                "createdAt": e.get("createdAt"),
+                "updatedAt": e.get("updatedAt"),
+                "versions_count": len(e.get("versions", [])),
+                "latest_version": e.get("versions", [{}])[0].get("id") if e.get("versions") else None,
+            }
+            for e in evidence
+        ],
+    }
+
+
+@mcp.tool()
+async def list_expiring_evidence(days: int = 30) -> dict[str, Any]:
+    """List evidence that hasn't been updated recently and may need renewal.
+
+    Args:
+        days: Consider evidence stale if not updated in this many days (default 30)
+
+    Returns:
+        Evidence that may need to be renewed
+    """
+    from datetime import datetime, timedelta, timezone
+
+    client = get_client()
+    workspace_id = await client.get_workspace_id()
+    result = await client.list_all_evidence(workspace_id)
+
+    evidence = result.get("data", [])
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    stale = []
+    for e in evidence:
+        updated = e.get("updatedAt", "")
+        if updated:
+            try:
+                updated_time = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                if updated_time < cutoff:
+                    stale.append({
+                        "id": e.get("id"),
+                        "name": e.get("name"),
+                        "description": e.get("description"),
+                        "updatedAt": e.get("updatedAt"),
+                        "days_since_update": (datetime.now(timezone.utc) - updated_time).days,
+                    })
+            except ValueError:
+                pass
+
+    # Sort by oldest first
+    stale.sort(key=lambda x: x.get("days_since_update", 0), reverse=True)
+
+    return {
+        "days_threshold": days,
+        "total_stale": len(stale),
+        "message": f"⚠️ {len(stale)} evidence items not updated in {days}+ days" if stale else f"✅ All evidence updated within {days} days",
+        "stale_evidence": stale,
+    }
+
+
 # ==================== EVENTS TOOLS ====================
 
 

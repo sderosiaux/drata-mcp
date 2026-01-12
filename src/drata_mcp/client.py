@@ -314,6 +314,47 @@ class DrataClient:
         params = {"page": page, "limit": limit}
         return await self._request("GET", "/public/assets", params=params)
 
+    # ==================== WORKSPACES ====================
+
+    async def get_workspace_id(self) -> int:
+        """Get the primary workspace ID."""
+        result = await self._request("GET", "/public/workspaces", params={"limit": 1})
+        if result.get("data"):
+            return result["data"][0]["id"]
+        raise ValueError("No workspace found")
+
+    # ==================== EVIDENCE LIBRARY ====================
+
+    async def list_evidence(
+        self,
+        workspace_id: int,
+        page: int = 1,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """List evidence library items.
+
+        Args:
+            workspace_id: Workspace ID
+            page: Page number
+            limit: Items per page (max 50)
+        """
+        params = {"page": page, "limit": min(limit, MAX_PAGE_SIZE)}
+        return await self._request(
+            "GET",
+            f"/public/workspaces/{workspace_id}/evidence-library",
+            params=params,
+        )
+
+    async def list_all_evidence(self, workspace_id: int) -> dict[str, Any]:
+        """List ALL evidence library items (auto-paginated).
+
+        Args:
+            workspace_id: Workspace ID
+        """
+        return await self._paginate_all(
+            f"/public/workspaces/{workspace_id}/evidence-library"
+        )
+
     # ==================== EVENTS ====================
 
     async def list_events(
