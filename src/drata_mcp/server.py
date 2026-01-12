@@ -359,9 +359,9 @@ async def list_personnel(
 
     personnel = result.get("data", [])
 
-    # Count active vs inactive
-    current = sum(1 for p in personnel if p.get("employmentStatus", "").startswith("CURRENT"))
-    with_failing = sum(1 for p in personnel if p.get("devicesFailingComplianceCount", 0) > 0)
+    # Count active vs inactive (use `or` to handle None values)
+    current = sum(1 for p in personnel if (p.get("employmentStatus") or "").startswith("CURRENT"))
+    with_failing = sum(1 for p in personnel if (p.get("devicesFailingComplianceCount") or 0) > 0)
 
     return {
         "total": result.get("total", len(personnel)),
@@ -372,11 +372,11 @@ async def list_personnel(
         "personnel": [
             {
                 "id": p.get("id"),
-                "email": p.get("user", {}).get("email"),
-                "name": f"{p.get('user', {}).get('firstName', '')} {p.get('user', {}).get('lastName', '')}".strip(),
+                "email": (p.get("user") or {}).get("email"),
+                "name": f"{(p.get('user') or {}).get('firstName', '')} {(p.get('user') or {}).get('lastName', '')}".strip(),
                 "employmentStatus": p.get("employmentStatus"),
-                "devicesCount": p.get("devicesCount", 0),
-                "devicesFailingCount": p.get("devicesFailingComplianceCount", 0),
+                "devicesCount": p.get("devicesCount") or 0,
+                "devicesFailingCount": p.get("devicesFailingComplianceCount") or 0,
                 "startDate": p.get("startDate"),
             }
             for p in personnel
@@ -399,11 +399,11 @@ async def list_personnel_with_issues(limit: int = 50) -> dict[str, Any]:
 
     personnel = result.get("data", [])
 
-    # Filter to those with issues
+    # Filter to those with issues (use `or` to handle None values)
     with_issues = [
         p for p in personnel
-        if p.get("devicesFailingComplianceCount", 0) > 0
-        and p.get("employmentStatus", "").startswith("CURRENT")
+        if (p.get("devicesFailingComplianceCount") or 0) > 0
+        and (p.get("employmentStatus") or "").startswith("CURRENT")
     ]
 
     return {
@@ -412,11 +412,11 @@ async def list_personnel_with_issues(limit: int = 50) -> dict[str, Any]:
         "personnel": [
             {
                 "id": p.get("id"),
-                "email": p.get("user", {}).get("email"),
-                "name": f"{p.get('user', {}).get('firstName', '')} {p.get('user', {}).get('lastName', '')}".strip(),
+                "email": (p.get("user") or {}).get("email"),
+                "name": f"{(p.get('user') or {}).get('firstName', '')} {(p.get('user') or {}).get('lastName', '')}".strip(),
                 "employmentStatus": p.get("employmentStatus"),
-                "devicesCount": p.get("devicesCount", 0),
-                "devicesFailingCount": p.get("devicesFailingComplianceCount", 0),
+                "devicesCount": p.get("devicesCount") or 0,
+                "devicesFailingCount": p.get("devicesFailingComplianceCount") or 0,
             }
             for p in with_issues
         ],
