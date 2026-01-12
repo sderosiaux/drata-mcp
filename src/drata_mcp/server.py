@@ -30,6 +30,9 @@ Always prioritize FAILED or non-compliant items first.""",
 # Global client instance
 _client: DrataClient | None = None
 
+# Drata API max limit is 50
+MAX_LIMIT = 50
+
 
 def get_client() -> DrataClient:
     """Get or create Drata client."""
@@ -78,7 +81,7 @@ async def list_controls(
         List of controls with their status and details
     """
     client = get_client()
-    result = await client.list_controls(limit=limit, search=search)
+    result = await client.list_controls(limit=min(limit, MAX_LIMIT), search=search)
 
     controls = result.get("data", [])
 
@@ -242,7 +245,7 @@ async def list_monitors(
         List of monitoring tests with status summary
     """
     client = get_client()
-    result = await client.list_monitors(limit=limit, check_result_status=status)
+    result = await client.list_monitors(limit=min(limit, MAX_LIMIT), check_result_status=status)
 
     monitors = result.get("data", [])
 
@@ -277,13 +280,13 @@ async def list_failing_monitors(limit: int = 50) -> dict[str, Any]:
     """Get all FAILED automated monitoring tests - critical for SOC2.
 
     Args:
-        limit: Max results
+        limit: Max results (max 50)
 
     Returns:
         List of failing tests that need remediation
     """
     client = get_client()
-    result = await client.list_monitors(limit=limit)
+    result = await client.list_monitors(limit=min(limit, MAX_LIMIT))
 
     # Filter to FAILED only
     monitors = result.get("data", [])
@@ -348,14 +351,14 @@ async def list_personnel(
     """List all personnel with compliance status.
 
     Args:
-        employment_status: Filter - CURRENT_EMPLOYEE, CURRENT_CONTRACTOR, FORMER
-        limit: Max results
+        employment_status: Filter - CURRENT_EMPLOYEE, CURRENT_CONTRACTOR, FORMER_EMPLOYEE, FORMER_CONTRACTOR
+        limit: Max results (max 50)
 
     Returns:
         Personnel list with compliance status
     """
     client = get_client()
-    result = await client.list_personnel(limit=limit, employment_status=employment_status)
+    result = await client.list_personnel(limit=min(limit, MAX_LIMIT), employment_status=employment_status)
 
     personnel = result.get("data", [])
 
@@ -389,13 +392,13 @@ async def list_personnel_with_issues(limit: int = 50) -> dict[str, Any]:
     """Get personnel with compliance issues (failing devices).
 
     Args:
-        limit: Max results
+        limit: Max results (max 50)
 
     Returns:
         Personnel with failing device compliance
     """
     client = get_client()
-    result = await client.list_personnel(limit=limit)
+    result = await client.list_personnel(limit=min(limit, MAX_LIMIT))
 
     personnel = result.get("data", [])
 
@@ -465,7 +468,7 @@ async def list_policies(limit: int = 50) -> dict[str, Any]:
         List of policies with version info
     """
     client = get_client()
-    result = await client.list_policies(limit=limit)
+    result = await client.list_policies(limit=min(limit, MAX_LIMIT))
 
     policies = result.get("data", [])
     return {
@@ -495,7 +498,7 @@ async def list_pending_policy_acknowledgments(limit: int = 50) -> dict[str, Any]
         List of unacknowledged policy assignments
     """
     client = get_client()
-    result = await client.list_user_policies(limit=limit, acknowledged=False)
+    result = await client.list_user_policies(limit=min(limit, MAX_LIMIT), acknowledged=False)
 
     assignments = result.get("data", [])
     return {
@@ -529,7 +532,7 @@ async def list_connections(limit: int = 50) -> dict[str, Any]:
         List of connections with sync status
     """
     client = get_client()
-    result = await client.list_connections(limit=limit)
+    result = await client.list_connections(limit=min(limit, MAX_LIMIT))
 
     connections = result.get("data", [])
 
@@ -571,7 +574,7 @@ async def list_vendors(limit: int = 50) -> dict[str, Any]:
         List of vendors
     """
     client = get_client()
-    result = await client.list_vendors(limit=limit)
+    result = await client.list_vendors(limit=min(limit, MAX_LIMIT))
 
     vendors = result.get("data", [])
     return {
@@ -604,7 +607,7 @@ async def list_devices(limit: int = 50) -> dict[str, Any]:
         List of devices with compliance status
     """
     client = get_client()
-    result = await client.list_devices(limit=limit)
+    result = await client.list_devices(limit=min(limit, MAX_LIMIT))
 
     devices = result.get("data", [])
     return {
