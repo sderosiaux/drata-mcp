@@ -30,8 +30,6 @@ Always prioritize FAILED or non-compliant items first.""",
 # Global client instance
 _client: DrataClient | None = None
 
-# Drata API max limit is 50
-MAX_LIMIT = 50
 
 
 def get_client() -> DrataClient:
@@ -68,20 +66,18 @@ def _get_control_status(c: dict) -> str:
 async def list_controls(
     search: str | None = None,
     only_issues: bool = False,
-    limit: int = 50,
 ) -> dict[str, Any]:
-    """List compliance controls with optional search.
+    """List ALL compliance controls with optional search.
 
     Args:
         search: Search term for control name/description
         only_issues: If True, only show controls with problems (not ready, no owner, no evidence)
-        limit: Max results (default 50)
 
     Returns:
         List of controls with their status and details
     """
     client = get_client()
-    result = await client.list_controls(limit=min(limit, MAX_LIMIT), search=search)
+    result = await client.list_all_controls(search=search)
 
     controls = result.get("data", [])
 
@@ -174,7 +170,7 @@ async def get_control_details(control_code: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def list_controls_with_issues(limit: int = 50) -> dict[str, Any]:
+async def list_controls_with_issues() -> dict[str, Any]:
     """Get controls that are NOT OK / have problems / need attention.
 
     Use this tool when user asks for:
@@ -184,13 +180,10 @@ async def list_controls_with_issues(limit: int = 50) -> dict[str, Any]:
 
     Returns controls with status: NOT_READY, NO_OWNER, or NEEDS_EVIDENCE.
 
-    Args:
-        limit: Max results
-
     Returns:
         Controls with compliance issues and their status
     """
-    return await list_controls(only_issues=True, limit=limit)
+    return await list_controls(only_issues=True)
 
 
 @mcp.tool()
@@ -204,7 +197,7 @@ async def get_monitors_for_control(control_code: str) -> dict[str, Any]:
         List of monitors linked to this control
     """
     client = get_client()
-    result = await client.list_monitors(limit=50)
+    result = await client.list_all_monitors()
 
     monitors = result.get("data", [])
     linked = []
@@ -233,19 +226,17 @@ async def get_monitors_for_control(control_code: str) -> dict[str, Any]:
 @mcp.tool()
 async def list_monitors(
     status: str | None = None,
-    limit: int = 50,
 ) -> dict[str, Any]:
-    """List automated monitoring tests.
+    """List ALL automated monitoring tests.
 
     Args:
         status: Filter - PASSED, FAILED, NOT_TESTED
-        limit: Max results
 
     Returns:
         List of monitoring tests with status summary
     """
     client = get_client()
-    result = await client.list_monitors(limit=min(limit, MAX_LIMIT), check_result_status=status)
+    result = await client.list_all_monitors(check_result_status=status)
 
     monitors = result.get("data", [])
 
@@ -276,17 +267,14 @@ async def list_monitors(
 
 
 @mcp.tool()
-async def list_failing_monitors(limit: int = 50) -> dict[str, Any]:
+async def list_failing_monitors() -> dict[str, Any]:
     """Get all FAILED automated monitoring tests - critical for SOC2.
-
-    Args:
-        limit: Max results (max 50)
 
     Returns:
         List of failing tests that need remediation
     """
     client = get_client()
-    result = await client.list_monitors(limit=min(limit, MAX_LIMIT))
+    result = await client.list_all_monitors()
 
     # Filter to FAILED only
     monitors = result.get("data", [])
@@ -346,19 +334,17 @@ async def get_monitor_details(monitor_id: int) -> dict[str, Any]:
 @mcp.tool()
 async def list_personnel(
     employment_status: str | None = None,
-    limit: int = 50,
 ) -> dict[str, Any]:
-    """List all personnel with compliance status.
+    """List ALL personnel with compliance status.
 
     Args:
         employment_status: Filter - CURRENT_EMPLOYEE, CURRENT_CONTRACTOR, FORMER_EMPLOYEE, FORMER_CONTRACTOR
-        limit: Max results (max 50)
 
     Returns:
         Personnel list with compliance status
     """
     client = get_client()
-    result = await client.list_personnel(limit=min(limit, MAX_LIMIT), employment_status=employment_status)
+    result = await client.list_all_personnel(employment_status=employment_status)
 
     personnel = result.get("data", [])
 
@@ -388,17 +374,14 @@ async def list_personnel(
 
 
 @mcp.tool()
-async def list_personnel_with_issues(limit: int = 50) -> dict[str, Any]:
+async def list_personnel_with_issues() -> dict[str, Any]:
     """Get personnel with compliance issues (failing devices).
-
-    Args:
-        limit: Max results (max 50)
 
     Returns:
         Personnel with failing device compliance
     """
     client = get_client()
-    result = await client.list_personnel(limit=min(limit, MAX_LIMIT))
+    result = await client.list_all_personnel()
 
     personnel = result.get("data", [])
 
@@ -468,7 +451,7 @@ async def list_policies(limit: int = 50) -> dict[str, Any]:
         List of policies with version info
     """
     client = get_client()
-    result = await client.list_policies(limit=min(limit, MAX_LIMIT))
+    result = await client.list_policies(limit=50)
 
     policies = result.get("data", [])
     return {
@@ -498,7 +481,7 @@ async def list_pending_policy_acknowledgments(limit: int = 50) -> dict[str, Any]
         List of unacknowledged policy assignments
     """
     client = get_client()
-    result = await client.list_user_policies(limit=min(limit, MAX_LIMIT), acknowledged=False)
+    result = await client.list_user_policies(limit=50, acknowledged=False)
 
     assignments = result.get("data", [])
     return {
@@ -532,7 +515,7 @@ async def list_connections(limit: int = 50) -> dict[str, Any]:
         List of connections with sync status
     """
     client = get_client()
-    result = await client.list_connections(limit=min(limit, MAX_LIMIT))
+    result = await client.list_connections(limit=50)
 
     connections = result.get("data", [])
 
@@ -574,7 +557,7 @@ async def list_vendors(limit: int = 50) -> dict[str, Any]:
         List of vendors
     """
     client = get_client()
-    result = await client.list_vendors(limit=min(limit, MAX_LIMIT))
+    result = await client.list_vendors(limit=50)
 
     vendors = result.get("data", [])
     return {
@@ -607,7 +590,7 @@ async def list_devices(limit: int = 50) -> dict[str, Any]:
         List of devices with compliance status
     """
     client = get_client()
-    result = await client.list_devices(limit=min(limit, MAX_LIMIT))
+    result = await client.list_devices(limit=50)
 
     devices = result.get("data", [])
     return {

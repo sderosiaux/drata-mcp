@@ -28,13 +28,13 @@ class TestListControls:
                     {"id": 1, "name": "Control 1", "code": "DCF-1", "isMonitored": True, "hasEvidence": True, "hasOwner": True, "isReady": True, "frameworkTags": ["SOC 2"]},
                     {"id": 2, "name": "Control 2", "code": "DCF-2", "isMonitored": False, "hasEvidence": False, "hasOwner": True, "isReady": True, "frameworkTags": ["SOC 2"]},
                 ],
-                "total": 165,
+                "total": 2,
             })
         )
 
-        result = await server_module.list_controls(limit=50)
+        result = await server_module.list_controls()
 
-        assert result["total"] == 165
+        assert result["total"] == 2
         assert result["showing"] == 2
         assert result["controls"][0]["code"] == "DCF-1"
         assert result["controls"][0]["status"] == "PASSING"
@@ -54,7 +54,7 @@ class TestListControls:
             })
         )
 
-        result = await server_module.list_controls(only_issues=True, limit=50)
+        result = await server_module.list_controls(only_issues=True)
 
         assert result["showing"] == 2  # Only the 2 with issues
         assert result["summary"]["not_ready"] == 1
@@ -78,7 +78,7 @@ class TestListMonitors:
             })
         )
 
-        result = await server_module.list_monitors(limit=50)
+        result = await server_module.list_monitors()
 
         assert result["total"] == 3
         assert result["summary"]["passed"] == 2
@@ -102,7 +102,7 @@ class TestListFailingMonitors:
             })
         )
 
-        result = await server_module.list_failing_monitors(limit=50)
+        result = await server_module.list_failing_monitors()
 
         assert result["total_failed"] == 1
         assert len(result["failing_monitors"]) == 1
@@ -121,7 +121,7 @@ class TestListFailingMonitors:
             })
         )
 
-        result = await server_module.list_failing_monitors(limit=50)
+        result = await server_module.list_failing_monitors()
 
         assert result["total_failed"] == 0
         assert "All tests passing" in result["message"]
@@ -144,7 +144,7 @@ class TestListPersonnel:
             })
         )
 
-        result = await server_module.list_personnel(limit=50)
+        result = await server_module.list_personnel()
 
         assert result["total"] == 3
         assert result["summary"]["current_employees_contractors"] == 2
@@ -168,7 +168,7 @@ class TestListPersonnelWithIssues:
             })
         )
 
-        result = await server_module.list_personnel_with_issues(limit=50)
+        result = await server_module.list_personnel_with_issues()
 
         assert result["total_with_issues"] == 1
         assert result["personnel"][0]["email"] == "a@test.com"
@@ -189,7 +189,7 @@ class TestListPolicies:
             })
         )
 
-        result = await server_module.list_policies(limit=50)
+        result = await server_module.list_policies()
 
         assert result["total"] == 1
         assert result["policies"][0]["version"] == 3
@@ -211,7 +211,7 @@ class TestListConnections:
             })
         )
 
-        result = await server_module.list_connections(limit=50)
+        result = await server_module.list_connections()
 
         assert result["total"] == 2
         assert result["summary"]["active"] == 1

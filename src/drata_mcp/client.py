@@ -1,8 +1,11 @@
 """Drata API Client."""
 
-from typing import Any
+from typing import Any, Callable, Coroutine
 
 import httpx
+
+# Drata API max limit per request
+MAX_PAGE_SIZE = 50
 
 
 class DrataClient:
@@ -62,26 +65,61 @@ class DrataClient:
         response.raise_for_status()
         return response.json()
 
+    async def _paginate_all(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Fetch all pages and combine results.
+
+        Returns combined data with total count.
+        """
+        params = params or {}
+        params["limit"] = MAX_PAGE_SIZE
+        params["page"] = 1
+
+        all_data: list[dict[str, Any]] = []
+        total = 0
+
+        while True:
+            result = await self._request("GET", path, params=params)
+            data = result.get("data", [])
+            total = result.get("total", total)
+
+            all_data.extend(data)
+
+            # Stop if we got fewer than the limit (last page)
+            if len(data) < MAX_PAGE_SIZE:
+                break
+
+            # Stop if we have all items
+            if len(all_data) >= total:
+                break
+
+            params["page"] += 1
+
+        return {"data": all_data, "total": total}
+
     # ==================== CONTROLS ====================
 
     async def list_controls(
         self,
         page: int = 1,
-        limit: int = 100,
+        limit: int = 50,
         status: str | None = None,
         framework_id: int | None = None,
         search: str | None = None,
     ) -> dict[str, Any]:
-        """List all controls with filters.
+        """List controls (single page).
 
         Args:
             page: Page number
-            limit: Items per page (max 100)
-            status: Filter by status (PASSING, FAILING, NOT_TESTED, etc.)
+            limit: Items per page (max 50)
+            status: Filter by status
             framework_id: Filter by framework ID
             search: Search term
         """
-        params = {"page": page, "limit": limit}
+        params = {"page": page, "limit": min(limit, MAX_PAGE_SIZE)}
         if status:
             params["status"] = status
         if framework_id:
@@ -89,6 +127,20 @@ class DrataClient:
         if search:
             params["q"] = search
         return await self._request("GET", "/public/controls", params=params)
+
+    async def list_all_controls(
+        self,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        """List ALL controls (auto-paginated).
+
+        Args:
+            search: Search term
+        """
+        params = {}
+        if search:
+            params["q"] = search
+        return await self._paginate_all("/public/controls", params)
 
     async def get_control(self, control_id: int) -> dict[str, Any]:
         """Get control by ID."""
@@ -103,20 +155,34 @@ class DrataClient:
     async def list_monitors(
         self,
         page: int = 1,
-        limit: int = 100,
+        limit: int = 50,
         check_result_status: str | None = None,
     ) -> dict[str, Any]:
-        """List automated monitoring tests.
+        """List monitors (single page).
 
         Args:
             page: Page number
-            limit: Items per page
+            limit: Items per page (max 50)
             check_result_status: Filter by status (PASSED, FAILED, NOT_TESTED)
         """
-        params = {"page": page, "limit": limit}
+        params = {"page": page, "limit": min(limit, MAX_PAGE_SIZE)}
         if check_result_status:
             params["checkResultStatus"] = check_result_status
         return await self._request("GET", "/public/monitors", params=params)
+
+    async def list_all_monitors(
+        self,
+        check_result_status: str | None = None,
+    ) -> dict[str, Any]:
+        """List ALL monitors (auto-paginated).
+
+        Args:
+            check_result_status: Filter by status (PASSED, FAILED, NOT_TESTED)
+        """
+        params = {}
+        if check_result_status:
+            params["checkResultStatus"] = check_result_status
+        return await self._paginate_all("/public/monitors", params)
 
     async def get_monitor(self, monitor_id: int) -> dict[str, Any]:
         """Get monitor by ID."""
@@ -127,20 +193,34 @@ class DrataClient:
     async def list_personnel(
         self,
         page: int = 1,
-        limit: int = 100,
+        limit: int = 50,
         employment_status: str | None = None,
     ) -> dict[str, Any]:
-        """List all personnel.
+        """List personnel (single page).
 
         Args:
             page: Page number
-            limit: Items per page
+            limit: Items per page (max 50)
             employment_status: Filter (CURRENT_EMPLOYEE, CURRENT_CONTRACTOR, FORMER, etc.)
         """
-        params = {"page": page, "limit": limit}
+        params = {"page": page, "limit": min(limit, MAX_PAGE_SIZE)}
         if employment_status:
             params["employmentStatus"] = employment_status
         return await self._request("GET", "/public/personnel", params=params)
+
+    async def list_all_personnel(
+        self,
+        employment_status: str | None = None,
+    ) -> dict[str, Any]:
+        """List ALL personnel (auto-paginated).
+
+        Args:
+            employment_status: Filter (CURRENT_EMPLOYEE, CURRENT_CONTRACTOR, FORMER, etc.)
+        """
+        params = {}
+        if employment_status:
+            params["employmentStatus"] = employment_status
+        return await self._paginate_all("/public/personnel", params)
 
     async def get_personnel(self, personnel_id: int) -> dict[str, Any]:
         """Get personnel by ID."""
