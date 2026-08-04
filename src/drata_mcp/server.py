@@ -358,10 +358,11 @@ async def get_monitor_details(monitor_id: int) -> dict[str, Any]:
 
     if monitor.get("checkResultStatus") == "FAILED":
         failures = await client.list_monitor_failures(workspace_id, test_id)
+        entries = failures.get("data") or []
         details["failingResources"] = [
-            _format_failing_resource(f) for f in failures.get("data", [])
+            _format_failing_resource(f) for f in entries
         ]
-        details["totalFailingResources"] = failures.get("total")
+        details["totalFailingResources"] = failures.get("total", len(entries))
         details["freshnessWarning"] = (
             f"Failing resources reflect the last test run at {details['lastCheck']}. "
             "If remediation happened after that, rerun via 'Test now' in the "
@@ -373,20 +374,63 @@ async def get_monitor_details(monitor_id: int) -> dict[str, Any]:
 
 
 def _format_failing_resource(f: dict) -> dict[str, Any]:
-    """Normalize a v2 /failures entry: name, account/region, ARN, cause."""
-    display = f.get("displayName") or ""
+    """Normalize a v2 /failures entry.
+
+    Drata reuses one finding DTO across wildly different monitor categories,
+    and which keys are populated depends on the connection type. Cloud-account
+    monitors populate name/resourceArn/region; codebase (IaC-scanning) monitors
+    populate resourceName/resourceType/property/repository instead and leave
+    every cloud field as an empty string.
+
+    Mapping only the cloud shape made codebase findings render as all-null,
+    which hid the actual failures. So map both shapes, treat "" as absent, and
+    pass through anything still unrecognized under `extra` rather than dropping
+    it -- an unmapped-but-visible field beats a silently empty result.
+    """
+
+    def val(*keys: str) -> Any:
+        for k in keys:
+            v = f.get(k)
+            if v not in (None, "", [], {}):
+                return v
+        return None
+
+    display = val("displayName") or ""
     # displayName is often "resource-id / region / account-id"
-    parts = [p.strip() for p in display.split("/")]
+    parts = [p.strip() for p in display.split("/")] if display else []
     region = parts[1] if len(parts) == 3 else None
-    return {
-        "name": f.get("name") or display or f.get("targetName"),
+
+    formatted = {
+        "name": val("name", "resourceName", "entityName", "targetName") or display or None,
         "displayName": display or None,
-        "resource": f.get("resource"),
-        "resourceArn": f.get("resourceArn"),
-        "accountId": f.get("accountId") or (parts[2] if len(parts) == 3 else None),
-        "region": region,
-        "cause": f.get("cause"),
+        "resource": val("resource", "resourceType"),
+        "resourceArn": val("resourceArn"),
+        "accountId": val("accountId") or (parts[2] if len(parts) == 3 else None),
+        "region": val("region"),
+        "cause": val("cause", "vulnerabilityTitle", "issueTitle"),
+        # Codebase-monitor fields: which Terraform property is missing, and where.
+        "property": val("property"),
+        "repository": val("repository"),
+        "severity": val("severity"),
+        "findingId": val("findingId", "id"),
     }
+    if region and not formatted["region"]:
+        formatted["region"] = region
+
+    mapped_keys = {
+        "displayName", "name", "resourceName", "entityName", "targetName",
+        "resource", "resourceType", "resourceArn", "accountId", "region",
+        "cause", "vulnerabilityTitle", "issueTitle", "property", "repository",
+        "severity", "findingId", "id",
+    }
+    extra = {
+        k: v for k, v in f.items()
+        if k not in mapped_keys and v not in (None, "", [], {})
+    }
+    if extra:
+        formatted["extra"] = extra
+
+    return formatted
 
 
 @mcp.tool()
