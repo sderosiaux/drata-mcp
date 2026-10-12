@@ -293,3 +293,65 @@ class TestGetComplianceSummary:
         assert result["status"] == "COMPLIANT"
         assert result["total_issues"] == 0
         assert "ready for audit" in result["recommendation"]
+
+
+class TestFormatFailingResource:
+    """Test _format_failing_resource across Drata's two finding shapes."""
+
+    def test_codebase_finding_is_not_all_null(self):
+        """Codebase (IaC) findings populate resourceName/property, not name/ARN.
+
+        Payload trimmed from a real GET .../monitors/tests/8005/findings/list
+        response (monitor 8005, Logging Configuration Enabled).
+        """
+        finding = {
+            "accountId": "abodo-dev",
+            "category": "INFRASTRUCTURE",
+            "connection": "GITHUB_CODE",
+            "entityName": "mcp",
+            "property": "aws_cloudfront_distribution.logging_config.bucket",
+            "region": "",
+            "repository": "abodo-dev/ops",
+            "resourceName": "mcp",
+            "resourceType": "AWS::CloudFront",
+            "severity": "MODERATE",
+            "vulnerabilityTitle": "Configure [aws_cloudfront_distribution.logging_config.bucket]",
+            "resourceArn": "",
+            "displayName": "",
+        }
+
+        result = server_module._format_failing_resource(finding)
+
+        assert result["name"] == "mcp"
+        assert result["resource"] == "AWS::CloudFront"
+        assert result["property"] == "aws_cloudfront_distribution.logging_config.bucket"
+        assert result["repository"] == "abodo-dev/ops"
+        assert result["severity"] == "MODERATE"
+        assert result["cause"].startswith("Configure")
+        # Empty strings must normalize to None, not leak through as ""
+        assert result["resourceArn"] is None
+        assert result["region"] is None
+
+    def test_cloud_finding_still_maps(self):
+        """The original cloud-account shape must keep working."""
+        finding = {
+            "name": "sg-0d169ed27e",
+            "displayName": "sg-0d169ed27e / us-east-1 / 123456789012",
+            "resource": "SecurityGroup",
+            "resourceArn": "arn:aws:ec2:us-east-1:123456789012:security-group/sg-0d169ed27e",
+            "cause": "Default security group has rules",
+        }
+
+        result = server_module._format_failing_resource(finding)
+
+        assert result["name"] == "sg-0d169ed27e"
+        assert result["region"] == "us-east-1"
+        assert result["accountId"] == "123456789012"
+        assert result["cause"] == "Default security group has rules"
+
+    def test_unrecognized_fields_surface_in_extra(self):
+        result = server_module._format_failing_resource(
+            {"resourceName": "x", "someNewDrataField": "important"}
+        )
+
+        assert result["extra"]["someNewDrataField"] == "important"

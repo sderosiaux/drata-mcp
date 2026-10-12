@@ -24,6 +24,14 @@ IMPORTANT TOOL SELECTION:
 Controls have derived statuses: PASSING, NEEDS_EVIDENCE, NOT_READY, NO_OWNER, ARCHIVED.
 Monitors (tests) have statuses: PASSED, FAILED, NOT_TESTED.
 
+DATA FRESHNESS: Drata's public API cannot trigger a monitor rerun or an
+integration sync (that only exists in the web UI as "Test now" on a test's
+Monitoring page, and via Autopilot's automatic daily runs). Monitor results
+may therefore lag infrastructure changes by up to ~24h. Always check a
+monitor's lastCheck timestamp before treating a FAILED result as current;
+if resources were remediated after lastCheck, tell the user to use "Test
+now" in the Drata UI or wait for the next Autopilot run.
+
 Always prioritize FAILED or non-compliant items first.""",
 )
 
@@ -299,32 +307,397 @@ async def list_failing_monitors() -> dict[str, Any]:
 
 @mcp.tool()
 async def get_monitor_details(monitor_id: int) -> dict[str, Any]:
-    """Get detailed information about a specific monitor/test.
+    """Get detailed information about a specific monitor/test,
+    including the resources currently failing it.
 
     Args:
-        monitor_id: The monitor ID
+        monitor_id: The monitor's testId (shown in Drata URLs, e.g.
+            /monitoring/details/221). A monitor list `id` is also accepted
+            and resolved to its testId automatically.
 
     Returns:
-        Full monitor details including failure reasons and remediation
+        Full monitor details including failure reasons, remediation,
+        and the list of failing resources
     """
     client = get_client()
-    monitor = await client.get_monitor(monitor_id)
+    workspace_id = await client.get_workspace_id()
 
-    instances = monitor.get("monitorInstances", [])
-    first_instance = instances[0] if instances else {}
+    try:
+        monitor = await client.get_monitor(workspace_id, monitor_id)
+    except Exception:
+        # Caller may have passed the monitor list `id` instead of `testId`;
+        # resolve it via the list endpoint and retry.
+        listing = await client.list_all_monitors()
+        match = next(
+            (m for m in listing.get("data", []) if m.get("id") == monitor_id),
+            None,
+        )
+        if not match or not match.get("testId"):
+            raise ValueError(f"Monitor not found: {monitor_id}")
+        monitor = await client.get_monitor(workspace_id, int(match["testId"]))
 
-    return {
+    test_id = int(monitor.get("testId") or monitor_id)
+
+    instances = monitor.get("monitorInstances") or []
+    first_instance = instances[0] if isinstance(instances, list) and instances else {}
+
+    details = {
         "id": monitor.get("id"),
+        "testId": test_id,
         "name": monitor.get("name"),
         "description": monitor.get("description"),
         "status": monitor.get("checkResultStatus"),
         "priority": monitor.get("priority"),
         "checkStatus": monitor.get("checkStatus"),
         "lastCheck": monitor.get("lastCheck"),
-        "controls": [{"id": c.get("id"), "code": c.get("code")} for c in monitor.get("controls", [])],
+        "controls": [{"id": c.get("id"), "code": c.get("code")} for c in (monitor.get("controls") or []) if isinstance(c, dict)],
         "failedTestDescription": first_instance.get("failedTestDescription"),
         "remedyDescription": first_instance.get("remedyDescription"),
         "evidenceCollectionDescription": first_instance.get("evidenceCollectionDescription"),
+    }
+
+    if monitor.get("checkResultStatus") == "FAILED":
+        failures = await client.list_monitor_failures(workspace_id, test_id)
+        entries = failures.get("data") or []
+        details["failingResources"] = [
+            _format_failing_resource(f) for f in entries
+        ]
+        details["totalFailingResources"] = failures.get("total", len(entries))
+        details["freshnessWarning"] = (
+            f"Failing resources reflect the last test run at {details['lastCheck']}. "
+            "If remediation happened after that, rerun via 'Test now' in the "
+            "Drata UI (public API cannot trigger reruns) or wait for the next "
+            "daily Autopilot run."
+        )
+
+    return details
+
+
+def _format_failing_resource(f: dict) -> dict[str, Any]:
+    """Normalize a v2 /failures entry.
+
+    Drata reuses one finding DTO across wildly different monitor categories,
+    and which keys are populated depends on the connection type. Cloud-account
+    monitors populate name/resourceArn/region; codebase (IaC-scanning) monitors
+    populate resourceName/resourceType/property/repository instead and leave
+    every cloud field as an empty string.
+
+    Mapping only the cloud shape made codebase findings render as all-null,
+    which hid the actual failures. So map both shapes, treat "" as absent, and
+    pass through anything still unrecognized under `extra` rather than dropping
+    it -- an unmapped-but-visible field beats a silently empty result.
+    """
+
+    def val(*keys: str) -> Any:
+        for k in keys:
+            v = f.get(k)
+            if v not in (None, "", [], {}):
+                return v
+        return None
+
+    display = val("displayName") or ""
+    # displayName is often "resource-id / region / account-id"
+    parts = [p.strip() for p in display.split("/")] if display else []
+    region = parts[1] if len(parts) == 3 else None
+
+    formatted = {
+        "name": val("name", "resourceName", "entityName", "targetName") or display or None,
+        "displayName": display or None,
+        "resource": val("resource", "resourceType"),
+        "resourceArn": val("resourceArn"),
+        "accountId": val("accountId") or (parts[2] if len(parts) == 3 else None),
+        "region": val("region"),
+        "cause": val("cause", "vulnerabilityTitle", "issueTitle"),
+        # Codebase-monitor fields: which Terraform property is missing, and where.
+        "property": val("property"),
+        "repository": val("repository"),
+        "severity": val("severity"),
+        "findingId": val("findingId", "id"),
+    }
+    if region and not formatted["region"]:
+        formatted["region"] = region
+
+    mapped_keys = {
+        "displayName", "name", "resourceName", "entityName", "targetName",
+        "resource", "resourceType", "resourceArn", "accountId", "region",
+        "cause", "vulnerabilityTitle", "issueTitle", "property", "repository",
+        "severity", "findingId", "id",
+    }
+    extra = {
+        k: v for k, v in f.items()
+        if k not in mapped_keys and v not in (None, "", [], {})
+    }
+    if extra:
+        formatted["extra"] = extra
+
+    return formatted
+
+
+@mcp.tool()
+async def get_control_compliance(control_code: str) -> dict[str, Any]:
+    """Full compliance picture for one control: control -> monitors ->
+    failing resources -> owner status, in a single call.
+
+    Args:
+        control_code: The control code, e.g. "DCF-406"
+
+    Returns:
+        Control summary, every mapped monitor with status, and for each
+        FAILED monitor the concrete failing resources (name, ARN, account,
+        region, failing rule) plus last-run timestamps
+    """
+    client = get_client()
+    controls = await client.list_all_controls(search=control_code)
+    control = next(
+        (c for c in controls.get("data", []) if c.get("code") == control_code),
+        None,
+    )
+    if not control:
+        raise ValueError(f"Control not found: {control_code}")
+
+    workspace_id = await client.get_workspace_id()
+    monitors = await client.list_all_monitors(control_id=control.get("id"))
+
+    monitor_summaries = []
+    for m in monitors.get("data", []):
+        summary: dict[str, Any] = {
+            "id": m.get("id"),
+            "testId": m.get("testId"),
+            "name": m.get("name"),
+            "status": m.get("checkResultStatus"),
+            "lastCheck": m.get("lastCheck"),
+        }
+        if m.get("checkResultStatus") == "FAILED" and m.get("testId"):
+            failures = await client.list_monitor_failures(
+                workspace_id, int(m["testId"])
+            )
+            summary["failingResources"] = [
+                _format_failing_resource(f) for f in failures.get("data", [])
+            ]
+            summary["totalFailingResources"] = failures.get("total")
+        monitor_summaries.append(summary)
+
+    failed = [m for m in monitor_summaries if m["status"] == "FAILED"]
+    return {
+        "control": {
+            "id": control.get("id"),
+            "code": control.get("code"),
+            "name": control.get("name"),
+            "status": _get_control_status(control),
+            "hasOwner": bool(control.get("users")),
+            "hasEvidence": control.get("hasEvidence"),
+            "isMonitored": control.get("isMonitored"),
+        },
+        "totalMonitors": len(monitor_summaries),
+        "failedMonitors": len(failed),
+        "monitors": monitor_summaries,
+        "note": (
+            "Monitor results update on Drata's daily Autopilot schedule; "
+            "compare lastCheck against your remediation time."
+        ),
+    }
+
+
+@mcp.tool()
+async def add_control_note(control_code: str, comment: str) -> dict[str, Any]:
+    """Attach a remediation/status note to a control (visible in Drata UI).
+
+    Use after engineering fixes are deployed to record what was done,
+    e.g. "Deleted 14 unused default VPCs (RM-5400); awaiting next test run."
+
+    Args:
+        control_code: The control code, e.g. "DCF-406"
+        comment: Note text, max 191 characters
+
+    Returns:
+        The created note
+    """
+    if len(comment) > 191:
+        raise ValueError("Drata control notes are limited to 191 characters")
+    client = get_client()
+    controls = await client.list_all_controls(search=control_code)
+    control = next(
+        (c for c in controls.get("data", []) if c.get("code") == control_code),
+        None,
+    )
+    if not control:
+        raise ValueError(f"Control not found: {control_code}")
+    workspace_id = await client.get_workspace_id()
+    note = await client.create_control_note(workspace_id, control["id"], comment)
+    return {
+        "created": True,
+        "noteId": note.get("id"),
+        "control": control_code,
+        "comment": note.get("comment"),
+        "createdAt": note.get("createdAt"),
+    }
+
+
+async def _find_control(client: DrataClient, control_code: str) -> dict[str, Any]:
+    """Resolve a control by its DCF code."""
+    controls = await client.list_all_controls(search=control_code)
+    control = next(
+        (c for c in controls.get("data", []) if c.get("code") == control_code),
+        None,
+    )
+    if not control:
+        raise ValueError(f"Control not found: {control_code}")
+    return control
+
+
+@mcp.tool()
+async def assign_control_owner(control_code: str, owner_email: str) -> dict[str, Any]:
+    """Assign an owner to a control by email address.
+
+    Args:
+        control_code: The control code, e.g. "DCF-406"
+        owner_email: Email of the Drata user to assign as owner
+
+    Returns:
+        Confirmation with the control's current owners
+    """
+    client = get_client()
+    control = await _find_control(client, control_code)
+    user = await client.find_user_by_email(owner_email)
+    workspace_id = await client.get_workspace_id()
+
+    await client.add_control_owner(workspace_id, control["id"], user["id"])
+    owners = await client.list_control_owners(workspace_id, control["id"])
+    return {
+        "assigned": True,
+        "control": control_code,
+        "owner": {"id": user["id"], "email": user.get("email")},
+        "currentOwners": [
+            {"id": o.get("id"), "email": o.get("email"),
+             "name": f"{o.get('firstName', '')} {o.get('lastName', '')}".strip()}
+            for o in owners.get("data", [])
+        ],
+    }
+
+
+@mcp.tool()
+async def add_evidence(
+    name: str,
+    control_codes: list[str] | None = None,
+    description: str | None = None,
+    url: str | None = None,
+    ticket_url: str | None = None,
+    owner_email: str | None = None,
+    renewal_schedule_type: str = "ONE_YEAR",
+    filed_at: str | None = None,
+) -> dict[str, Any]:
+    """Create an Evidence Library item, optionally with a URL artifact and
+    linked controls.
+
+    Args:
+        name: Evidence name (max 191 chars)
+        control_codes: Control codes to link, e.g. ["DCF-406"]
+        description: What this evidence demonstrates
+        url: Artifact source URL (e.g. link to runbook, dashboard, PR)
+        ticket_url: Artifact source ticket URL (alternative to url)
+        owner_email: Evidence owner email — required if url/ticket_url given
+        renewal_schedule_type: ONE_YEAR (default), SIX_MONTHS, THREE_MONTHS,
+            ONE_MONTH, or CUSTOM — used only when an artifact source is given
+        filed_at: ISO date the artifact was filed (defaults to today when an
+            artifact source is given)
+
+    Returns:
+        The created evidence item
+    """
+    client = get_client()
+    workspace_id = await client.get_workspace_id()
+
+    payload: dict[str, Any] = {"name": name}
+    if description:
+        payload["description"] = description
+
+    if control_codes:
+        control_ids = []
+        for code in control_codes:
+            control = await _find_control(client, code)
+            control_ids.append(control["id"])
+        payload["controlIds"] = control_ids
+
+    if url or ticket_url:
+        if not owner_email:
+            raise ValueError(
+                "owner_email is required when providing a url/ticket_url artifact"
+            )
+        from datetime import date
+
+        user = await client.find_user_by_email(owner_email)
+        payload["ownerId"] = user["id"]
+        payload["renewalScheduleType"] = renewal_schedule_type
+        payload["filedAt"] = filed_at or date.today().isoformat()
+        if url:
+            payload["url"] = url
+        else:
+            payload["ticketUrl"] = ticket_url
+
+    evidence = await client.create_evidence(workspace_id, payload)
+    return {
+        "created": True,
+        "evidenceId": evidence.get("id"),
+        "name": evidence.get("name"),
+        "linkedControls": control_codes or [],
+    }
+
+
+@mcp.tool()
+async def link_evidence_to_controls(
+    evidence_id: int,
+    control_codes: list[str],
+) -> dict[str, Any]:
+    """Link an existing Evidence Library item to controls.
+
+    Args:
+        evidence_id: The Evidence Library item ID
+        control_codes: Control codes to link, e.g. ["DCF-406", "DCF-77"]
+
+    Returns:
+        Confirmation of the update
+    """
+    client = get_client()
+    workspace_id = await client.get_workspace_id()
+    control_ids = []
+    for code in control_codes:
+        control = await _find_control(client, code)
+        control_ids.append(control["id"])
+    await client.update_evidence(
+        workspace_id, evidence_id, {"controlIds": control_ids}
+    )
+    return {"updated": True, "evidenceId": evidence_id, "linkedControls": control_codes}
+
+
+@mcp.tool()
+async def get_connections_status() -> dict[str, Any]:
+    """List integration connections with state and connection timestamps.
+
+    Useful for judging data freshness (e.g. is the AWS connection healthy).
+    Note: the public API does not expose a per-sync "last synced at" time or
+    a way to trigger a sync; connection syncs and monitor reruns happen on
+    Drata's Autopilot schedule or manually in the web UI.
+
+    Returns:
+        Connections with clientType, state, connected flag, and timestamps
+    """
+    client = get_client()
+    result = await client.list_connections()
+    return {
+        "total": result.get("total"),
+        "connections": [
+            {
+                "id": c.get("id"),
+                "clientType": c.get("clientType"),
+                "alias": c.get("clientAlias"),
+                "state": c.get("state"),
+                "connected": c.get("connected"),
+                "connectedAt": c.get("connectedAt"),
+                "failedAt": c.get("failedAt"),
+                "accountId": c.get("accountId"),
+            }
+            for c in result.get("data", [])
+        ],
     }
 
 

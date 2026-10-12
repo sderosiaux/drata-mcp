@@ -173,20 +173,53 @@ class DrataClient:
     async def list_all_monitors(
         self,
         check_result_status: str | None = None,
+        control_id: int | None = None,
     ) -> dict[str, Any]:
         """List ALL monitors (auto-paginated).
 
         Args:
             check_result_status: Filter by status (PASSED, FAILED, NOT_TESTED)
+            control_id: Filter to monitors mapped to a specific control
         """
-        params = {}
+        params: dict[str, Any] = {}
         if check_result_status:
             params["checkResultStatus"] = check_result_status
+        if control_id:
+            params["controlId"] = control_id
         return await self._paginate_all("/public/monitors", params)
 
-    async def get_monitor(self, monitor_id: int) -> dict[str, Any]:
-        """Get monitor by ID."""
-        return await self._request("GET", f"/public/monitors/{monitor_id}")
+    async def get_monitor(self, workspace_id: int, test_id: int) -> dict[str, Any]:
+        """Get monitoring test details by test ID (API v2).
+
+        Note: the v1 `GET /public/monitors/{id}` endpoint does not exist
+        (v1 only supports listing); details live under the workspace-scoped
+        v2 path. `test_id` is the monitor's `testId` field, not its `id`.
+        """
+        return await self._request(
+            "GET", f"/public/v2/workspaces/{workspace_id}/monitoring-tests/{test_id}"
+        )
+
+    async def list_monitor_failures(
+        self,
+        workspace_id: int,
+        test_id: int,
+        page: int = 1,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """List the resources currently failing a monitoring test (API v2).
+
+        Args:
+            workspace_id: Workspace ID
+            test_id: The monitor's testId
+            page: Page number
+            limit: Items per page (max 50)
+        """
+        params = {"page": page, "limit": min(limit, MAX_PAGE_SIZE)}
+        return await self._request(
+            "GET",
+            f"/public/v2/workspaces/{workspace_id}/monitoring-tests/{test_id}/failures",
+            params=params,
+        )
 
     # ==================== PERSONNEL ====================
 
@@ -314,13 +347,123 @@ class DrataClient:
         params = {"page": page, "limit": limit}
         return await self._request("GET", "/public/assets", params=params)
 
+    # ==================== CONTROL NOTES ====================
+
+    async def list_control_notes(
+        self,
+        workspace_id: int,
+        control_id: int,
+    ) -> dict[str, Any]:
+        """List notes on a control (API v2)."""
+        return await self._request(
+            "GET",
+            f"/public/v2/workspaces/{workspace_id}/controls/{control_id}/notes",
+        )
+
+    async def create_control_note(
+        self,
+        workspace_id: int,
+        control_id: int,
+        comment: str,
+    ) -> dict[str, Any]:
+        """Create a note on a control (API v2).
+
+        Args:
+            workspace_id: Workspace ID
+            control_id: Control ID (numeric id, not DCF code)
+            comment: Note text (max 191 characters)
+        """
+        return await self._request(
+            "POST",
+            f"/public/v2/workspaces/{workspace_id}/controls/{control_id}/notes",
+            json={"comment": comment},
+        )
+
+    # ==================== CONTROL OWNERS ====================
+
+    async def list_control_owners(
+        self,
+        workspace_id: int,
+        control_id: int,
+    ) -> dict[str, Any]:
+        """List owners of a control (API v2)."""
+        return await self._request(
+            "GET",
+            f"/public/v2/workspaces/{workspace_id}/controls/{control_id}/owners",
+        )
+
+    async def add_control_owner(
+        self,
+        workspace_id: int,
+        control_id: int,
+        owner_id: int,
+    ) -> dict[str, Any]:
+        """Add an owner to a control (API v2).
+
+        Args:
+            workspace_id: Workspace ID
+            control_id: Control ID (numeric id, not DCF code)
+            owner_id: Drata user ID (not personnel ID)
+        """
+        return await self._request(
+            "POST",
+            f"/public/v2/workspaces/{workspace_id}/controls/{control_id}/owners",
+            json={"ownerId": owner_id},
+        )
+
+    async def find_user_by_email(self, email: str) -> dict[str, Any]:
+        """Find a Drata user (not personnel) by email address."""
+        result = await self._paginate_all("/public/users")
+        for u in result.get("data", []):
+            if (u.get("email") or "").lower() == email.lower():
+                return u
+        raise ValueError(f"User not found: {email}")
+
+    # ==================== EVIDENCE LIBRARY (WRITE) ====================
+
+    async def create_evidence(
+        self,
+        workspace_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create an Evidence Library item (API v2).
+
+        Payload fields: name (required); optional description, controlIds,
+        url/ticketUrl/base64File (one artifact source max — when provided,
+        renewalScheduleType, filedAt, and ownerId become required),
+        renewalDate, implementationGuidance.
+        """
+        return await self._request(
+            "POST",
+            f"/public/v2/workspaces/{workspace_id}/evidence-library",
+            json=payload,
+        )
+
+    async def update_evidence(
+        self,
+        workspace_id: int,
+        evidence_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update an Evidence Library item (API v2), e.g. to link controlIds."""
+        return await self._request(
+            "PUT",
+            f"/public/v2/workspaces/{workspace_id}/evidence-library/{evidence_id}",
+            json=payload,
+        )
+
     # ==================== WORKSPACES ====================
 
+    _workspace_id: int | None = None
+
     async def get_workspace_id(self) -> int:
-        """Get the primary workspace ID."""
+        """Get the primary workspace ID (cached after first call)."""
+        if self._workspace_id is not None:
+            return self._workspace_id
         result = await self._request("GET", "/public/workspaces", params={"limit": 1})
         if result.get("data"):
-            return result["data"][0]["id"]
+            self._workspace_id = result["data"][0]["id"]
+            return self._workspace_id
         raise ValueError("No workspace found")
 
     # ==================== EVIDENCE LIBRARY ====================
